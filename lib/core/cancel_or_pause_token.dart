@@ -17,6 +17,10 @@ class CancelOrPauseToken {
     _notifier.value = Event.pause;
   }
 
+  void resume() {
+    _notifier.value = Event.none;
+  }
+
   void dispose() {
     _notifier.dispose();
   }

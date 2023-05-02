@@ -1,4 +1,4 @@
-import 'package:dart_downloader/presentation/dart_downloader_view.dart';
+import 'package:dart_downloader/presentation/views/dart_downloader_view.dart';
 import 'package:flutter/material.dart';
 
 void main() {
@@ -13,8 +13,10 @@ class DartDownloaderApp extends StatelessWidget {
     return MaterialApp(
       title: "Dart Downloader Demo",
       theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
+          primarySwatch: Colors.purple,
+          primaryColor: Colors.purpleAccent,
+          primaryColorLight: Colors.white,
+          primaryColorDark: Colors.black),
       home: const DartDownloaderView(),
     );
   }

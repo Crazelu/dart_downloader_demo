@@ -3,6 +3,9 @@ class DownloaderException {
   final StackTrace? trace;
 
   const DownloaderException({required this.message, this.trace});
+
+  @override
+  String toString() => "DownloaderException(message: $message)";
 }
 
 class DownloadCancelException extends DownloaderException {
