@@ -1,15 +1,16 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
-import 'package:dart_downloader/core/cancel_or_pause_token.dart';
-import 'package:dart_downloader/models/download_result.dart';
-import 'package:dart_downloader/core/exception.dart';
-import 'package:dart_downloader/core/logger.dart';
-import 'package:dart_downloader/models/download_state.dart';
+import 'package:dart_downloader_demo/core/cancel_or_pause_token.dart';
+import 'package:dart_downloader_demo/models/download_result.dart';
+import 'package:dart_downloader_demo/core/exception.dart';
+import 'package:dart_downloader_demo/core/logger.dart';
+import 'package:dart_downloader_demo/models/download_state.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:rxdart/subjects.dart';
+
+bool _enableLogs = true;
 
 class Downloader {
   late final CancelOrPauseToken _cancelOrPauseToken;
@@ -18,22 +19,23 @@ class Downloader {
     _cancelOrPauseToken = CancelOrPauseToken();
     _cancelOrPauseToken.eventNotifier.addListener(_tokenEventListener);
     _downloadResultNotifier.addListener(_downloadResultListener);
+    if (!_enableLogs) _logger.disableLogs();
   }
 
-  late final _logger = Logger(Downloader);
+  static final _logger = Logger(Downloader);
 
   static const _cacheDirectory = "cacheDirectory";
 
   bool _isDownloading = false;
   bool _isPaused = false;
   bool _isCancelled = false;
-  bool _justResumed = false;
   bool _canBuffer = false;
+  bool _hasResumedDownload = false;
   int _totalBytes = 0;
-  int _currentChunk = 1;
-  int _bytesPerChunk = 0;
-  int _maxChunks = 300;
-  int _maxRetriesPerChunk = 3;
+
+  ///Size of partially (if download is in progress)
+  ///or fully (if download is complete) downloaded file.
+  int _downloadedBytesLength = 0;
 
   String _url = "";
   String? _path;
@@ -43,7 +45,7 @@ class Downloader {
   late final _formattedDownloadProgressController = BehaviorSubject<String>();
   late final _downloadStateController = BehaviorSubject<DownloadState>();
 
-  late Completer<File?> _completer = Completer<File?>();
+  late Completer<File?> _downloadedFileCompleter = Completer<File?>();
   final _downloadResultNotifier = ValueNotifier<DownloadResult?>(null);
 
   late final _fileSizeCompleter = Completer<int>();
@@ -51,13 +53,18 @@ class Downloader {
   final _canBufferNotifier = ValueNotifier<bool>(false);
   ValueNotifier<bool> get canPauseNotifier => _canBufferNotifier;
 
+  StreamSubscription<List<int>>? _downloadResponseStreamSub;
+
   ///Listener attached to [_downloadResultNotifier].
   void _downloadResultListener() {
     final result = _downloadResultNotifier.value;
     if (result != null && result.isDownloadComplete) {
+      _hasResumedDownload = false;
       _isDownloading = false;
-      if (!_isCancelled && !_isPaused && !_completer.isCompleted) {
-        _completer.complete(result.file);
+      if (!_isCancelled &&
+          !_isPaused &&
+          !_downloadedFileCompleter.isCompleted) {
+        _downloadedFileCompleter.complete(result.file);
         _downloadStateController.add(const Completed());
       }
     }
@@ -68,29 +75,35 @@ class Downloader {
     if (_isCancelled) return;
 
     if (_cancelOrPauseToken.eventNotifier.value == Event.cancel) {
+      _downloadResponseStreamSub?.cancel();
+      _hasResumedDownload = false;
       _isDownloading = false;
       _isCancelled = true;
       _downloadStateController.add(const Cancelled());
-      _completer.completeError(DownloadCancelException());
+      _downloadedFileCompleter.completeError(DownloadCancelException());
     }
     if (_cancelOrPauseToken.eventNotifier.value == Event.pause) {
+      _downloadResponseStreamSub?.cancel();
+      _hasResumedDownload = false;
       _isDownloading = false;
       _isPaused = true;
       _downloadStateController.add(const Paused());
-      _completer.completeError(DownloadPauseException());
-      _completer = Completer<File?>();
+      _downloadedFileCompleter.completeError(DownloadPauseException());
+      _downloadedFileCompleter = Completer<File?>();
     }
   }
 
+  ///Downloaded file. This is null when download isn't complete.
   File? get downloadedFile => _downloadResultNotifier.value?.file;
 
   ///Stream of download progress in bytes.
   Stream<int> get progress => _downloadProgressController.stream;
 
-  ///Stream of download progress formatted for readability (e.g 5.3/8.5 MB).
+  ///Stream of download progress formatted for readability (e.g 5.3MB/8.5 MB).
   Stream<String> get formattedProgress =>
       _formattedDownloadProgressController.stream;
 
+  ///Stream of downloader state (PAUSED, DOWNLOADING, CANCELLED, COMPLETED).
   Stream<DownloadState> get downloadState => _downloadStateController.stream;
 
   ///Size of file to be downloaded in bytes.
@@ -101,37 +114,40 @@ class Downloader {
     return _fileSizeCompleter.future;
   }
 
-  ///Loads metadata and queues chunk downloads if buffering is supported.
+  ///Disables logs.
+  static void disableLogs() {
+    _enableLogs = false;
+    _logger.disableLogs();
+  }
+
+  ///Loads metadata and downloads with ranges if buffering is supported.
   ///If buffering isn't supported, the entire file is downloaded in one go.
   ///
-  ///Metadata is not reloaded on [resumingDownload].
+  ///Metadata is not reloaded when download is resumed.
   Future<File?> download({
     required String url,
-    bool resumingDownload = false,
     String? path,
     String? fileName,
-    int? maxChunks,
-    int? retryCount,
   }) async {
     try {
-      if (resumingDownload) {
-        _justResumed = true;
+      _downloadResponseStreamSub?.cancel();
+
+      if (_hasResumedDownload) {
         _isPaused = false;
-        _queueDownloads();
-        return _completer.future;
+        _handleDownload();
+        return _downloadedFileCompleter.future;
       }
 
       _url = url;
       _path = path;
       _fileName = fileName;
-      _maxChunks = maxChunks ?? _maxChunks;
-      _maxRetriesPerChunk = retryCount ?? _maxRetriesPerChunk;
+      _downloadedBytesLength = 0;
 
       await _loadMetadata();
 
-      _queueDownloads();
+      _handleDownload();
 
-      return _completer.future;
+      return _downloadedFileCompleter.future;
     } on DownloaderException catch (e) {
       _logger.log(e.message);
       return null;
@@ -166,9 +182,9 @@ class Downloader {
     return File("$fileDirectory/$fileName");
   }
 
-  ///Queues chunk downloads with retries if buffering is supported.
+  ///Downloads with ranges if buffering is supported.
   ///Otherwise, the entire audio content is downloaded once.
-  Future<void> _queueDownloads() async {
+  Future<void> _handleDownload() async {
     try {
       final fileName = _fileName ?? _getFileName;
       if (fileName.isEmpty) {
@@ -187,49 +203,44 @@ class Downloader {
         return;
       }
 
-      int tries = 1;
+      int start = _hasResumedDownload
+          ? _downloadedBytesLength + 1
+          : _downloadedBytesLength;
 
-      while (_currentChunk <= _maxChunks && tries != _maxRetriesPerChunk) {
-        final bytes = await _downloadChunk();
+      if (start >= _totalBytes) {
+        _isDownloading = false;
+        _logger.log("Download should have terminated");
+        return;
+      }
 
-        if (!_isDownloading) {
-          _logger.log("Download terminated");
-          break;
-        }
+      final bytes = await _downloadInRange(start, _totalBytes);
 
-        _justResumed = false;
+      if (!_isDownloading) {
+        _logger.log("Download terminated");
+        return;
+      }
 
-        if (bytes.isNotEmpty) {
-          //write to file
-          final downloadedFile =
-              _downloadResultNotifier.value?.file ?? await _getFile(fileName);
+      if (bytes.isNotEmpty) {
+        //write to file
+        final downloadedFile =
+            _downloadResultNotifier.value?.file ?? await _getFile(fileName);
 
-          await downloadedFile.writeAsBytes(
-            bytes,
-            mode: _currentChunk == 1 ? FileMode.write : FileMode.append,
-          );
+        await downloadedFile.writeAsBytes(
+          bytes,
+          mode: _hasResumedDownload ? FileMode.append : FileMode.write,
+        );
 
-          _currentChunk++;
-          tries = 0;
-
-          _downloadResultNotifier.value = DownloadResult(
-            file: downloadedFile,
-            id: DateTime.now().toIso8601String(),
-            isDownloadComplete: _currentChunk >= _maxChunks,
-          );
-        } else {
-          tries++;
-        }
+        _downloadResultNotifier.value = DownloadResult(
+          file: downloadedFile,
+          id: DateTime.now().toIso8601String(),
+          isDownloadComplete: _downloadedBytesLength >= _totalBytes - 1,
+        );
       }
     } catch (e) {
-      _logger.log("_queueDownloads -> $e");
+      _logger.log("_handleDownload -> $e");
       _handleError(e);
     }
   }
-
-  ///Size of partially (if download is in progress)
-  ///or fully (if download is complete) downloaded file.
-  int _downloadedBytesLength = 0;
 
   ///Adds download progress to streams.
   void _setDownloadProgress(int byteLength) {
@@ -275,13 +286,12 @@ class Downloader {
   String _format(int value, int divider, String unit) {
     final result = divider > 1 ? value / divider : value;
 
-    if (result.toInt() == result.round()) return '${result.round()} $unit';
     return '${result.toStringAsFixed(1)} $unit';
   }
 
-  ///Downloads file chunk from [_url] in the current range
-  ///specified by [_currentChunk] and [_bytesPerChunk] and returns the downloaded bytes.
-  Future<Uint8List> _downloadChunk() async {
+  ///Downloads file chunk from [_url] in range specified by
+  ///[start] and [end] and returns the downloaded bytes.
+  Future<Uint8List> _downloadInRange(int start, int end) async {
     try {
       final fileName = _fileName ?? _getFileName;
       if (fileName.isEmpty) {
@@ -292,29 +302,15 @@ class Downloader {
 
       final bytesCompleter = Completer<Uint8List>();
 
-      int startBytes;
-      if (_justResumed) {
-        startBytes = _downloadedBytesLength + 1;
-      } else if (_currentChunk == 1) {
-        startBytes = 0;
-      } else {
-        startBytes = ((_currentChunk - 1) * _bytesPerChunk) + 1;
-      }
-
-      int endBytes = _currentChunk * _bytesPerChunk;
-      if (endBytes > _totalBytes) {
-        endBytes = _totalBytes;
-      }
-
-      _logger.log(
-          "($fileName) -> Starting chunk download for range $startBytes-$endBytes");
+      _logger
+          .log("($fileName) -> Starting chunk download for range $start-$end");
 
       final request = http.Request("GET", Uri.parse(_url));
-      request.headers.addAll({"Range": "bytes=$startBytes-$endBytes"});
+      request.headers.addAll({"Range": "bytes=$start-$end"});
       final response = await http.Client().send(request);
       List<int> fileBytes = [];
 
-      response.stream.listen(
+      _downloadResponseStreamSub = response.stream.listen(
         (bytes) {
           if (_isPaused || _isCancelled) return;
 
@@ -325,7 +321,7 @@ class Downloader {
           bytesCompleter.complete(Uint8List.fromList(fileBytes));
         },
         onError: (e) {
-          _logger.log("_downloadChunk StreamedResponse onError-> $e");
+          _logger.log("_downloadInRange StreamedResponse onError-> $e");
           _handleError(e);
         },
         cancelOnError: true,
@@ -333,7 +329,7 @@ class Downloader {
 
       return bytesCompleter.future;
     } catch (e) {
-      _logger.log("_downloadChunk -> $e");
+      _logger.log("_downloadInRange -> $e");
       _handleError(e);
     }
     return Uint8List.fromList([]);
@@ -353,7 +349,7 @@ class Downloader {
       final response = await http.Client().send(request);
       List<int> fileBytes = [];
 
-      response.stream.listen(
+      _downloadResponseStreamSub = response.stream.listen(
         (bytes) {
           if (_isPaused || _isCancelled) return;
 
@@ -402,7 +398,7 @@ class Downloader {
         cancelOnError: true,
       );
 
-      return _completer.future;
+      return _downloadedFileCompleter.future;
     } catch (e) {
       _logger.log("_downloadEntireFile -> $e");
       _handleError(e);
@@ -418,43 +414,8 @@ class Downloader {
     _downloadStateController.add(const Cancelled());
     if (rethrowOnlyOwnedException && error is DownloaderException) {
       throw error;
-    } else {
+    } else if (!rethrowOnlyOwnedException) {
       throw error;
-    }
-  }
-
-  ///Computes maximum chunks allowed for [totalBytes].
-  int _getMaxChunks(int totalBytes) {
-    try {
-      if (totalBytes == 0) {
-        _cancelOrPauseToken.cancel();
-        return 0;
-      }
-
-      const int K = 1024;
-      const int M = K * K;
-      const int G = M * K;
-      const int T = G * K;
-
-      final List<int> dividers = [T, G, M, K, 1];
-
-      int result = 10;
-
-      for (int i = 0; i < dividers.length; i++) {
-        final divider = dividers[i];
-        if (totalBytes >= divider) {
-          if (i >= 3) return 1;
-          result = math.pow(10, 3 - i).toInt();
-          break;
-        }
-      }
-
-      result ~/= 3;
-      if (result > _maxChunks) return _maxChunks;
-      return result;
-    } catch (e) {
-      _logger.log(e);
-      return 1;
     }
   }
 
@@ -471,8 +432,6 @@ class Downloader {
       _fileSizeCompleter.complete(_totalBytes);
     }
 
-    _maxChunks = _getMaxChunks(_totalBytes);
-    _bytesPerChunk = _totalBytes ~/ _maxChunks;
     _canBufferNotifier.value = _canBuffer;
   }
 
@@ -502,11 +461,12 @@ class Downloader {
         );
       }
 
-      if (_completer.isCompleted) {
-        _completer = Completer<File?>();
+      if (_downloadedFileCompleter.isCompleted) {
+        _downloadedFileCompleter = Completer<File?>();
       }
       _cancelOrPauseToken.resume();
-      return await download(url: _url, resumingDownload: true);
+      _hasResumedDownload = true;
+      return await download(url: _url);
     } catch (e) {
       _logger.log("resume -> $e");
     }
@@ -520,6 +480,7 @@ class Downloader {
 
   ///Releases resources.
   void dispose() {
+    _downloadResponseStreamSub?.cancel();
     _cancelOrPauseToken.eventNotifier.removeListener(_tokenEventListener);
     _downloadResultNotifier.removeListener(_downloadResultListener);
     _cancelOrPauseToken.dispose();

@@ -1,5 +1,5 @@
 import "dart:io";
-import "package:dart_downloader/presentation/widgets/music_track_player_widget.dart";
+import "package:dart_downloader_demo/presentation/widgets/music_track_player_widget.dart";
 import "package:flutter/material.dart";
 
 class PlayAudioView extends StatelessWidget {

@@ -1,7 +1,7 @@
-import 'package:dart_downloader/core/downloader.dart';
-import 'package:dart_downloader/models/download_state.dart';
-import 'package:dart_downloader/presentation/views/play_audio_view.dart';
-import 'package:dart_downloader/presentation/widgets/custom_text.dart';
+import 'package:dart_downloader_demo/core/downloader.dart';
+import 'package:dart_downloader_demo/models/download_state.dart';
+import 'package:dart_downloader_demo/presentation/views/play_audio_view.dart';
+import 'package:dart_downloader_demo/presentation/widgets/custom_text.dart';
 import 'package:flutter/material.dart';
 
 class FileDownloadWidget extends StatefulWidget {
@@ -61,12 +61,11 @@ class _DownloadRow extends StatelessWidget {
                       CustomText(
                         softWrap: true,
                         text: fileName,
-                        fontSize: 14,
+                        fontSize: 15,
                         fontWeight: FontWeight.w500,
                         color: Theme.of(context).primaryColorDark,
                       ),
                       const SizedBox(height: 6),
-                      //show download progress
                       _DownloadProgress(
                         downloader: downloader,
                         state: snapshot.data!,
@@ -76,7 +75,6 @@ class _DownloadRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                // pause, resume and cancel icons
                 _DownloadControls(
                   downloader: downloader,
                   state: snapshot.data!,
@@ -179,14 +177,14 @@ class _DownloadControls extends StatelessWidget {
             children: [
               if (canPause && state is Paused) ...{
                 _ControlIcon(
-                  icon: Icons.restart_alt,
+                  icon: Icons.restart_alt_outlined,
                   onTap: () {
                     downloader.resume();
                   },
                 ),
                 const SizedBox(width: 8),
                 _ControlIcon(
-                  icon: Icons.cancel,
+                  icon: Icons.close,
                   onTap: () {
                     downloader.cancel();
                   },
@@ -194,14 +192,14 @@ class _DownloadControls extends StatelessWidget {
               },
               if (canPause && state is Downloading) ...{
                 _ControlIcon(
-                  icon: Icons.pause_circle,
+                  icon: Icons.pause_outlined,
                   onTap: () {
                     downloader.pause();
                   },
                 ),
                 const SizedBox(width: 8),
                 _ControlIcon(
-                  icon: Icons.cancel,
+                  icon: Icons.close,
                   onTap: () {
                     downloader.cancel();
                   },

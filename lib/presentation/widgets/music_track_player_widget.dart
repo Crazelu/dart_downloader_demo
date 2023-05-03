@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:dart_downloader/core/audio/audio_playback_context_manager.dart';
-import 'package:dart_downloader/core/audio/audio_service.dart';
-import 'package:dart_downloader/core/logger.dart';
-import 'package:dart_downloader/presentation/widgets/custom_text.dart';
+import 'package:dart_downloader_demo/core/audio/audio_playback_context_manager.dart';
+import 'package:dart_downloader_demo/core/audio/audio_service.dart';
+import 'package:dart_downloader_demo/core/logger.dart';
+import 'package:dart_downloader_demo/presentation/widgets/custom_text.dart';
 import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 

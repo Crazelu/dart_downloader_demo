@@ -1,11 +1,16 @@
 import 'dart:developer' as dev;
 
 class Logger {
-  final Type type;
-
   Logger(this.type);
 
+  final Type type;
+  bool _enabled = true;
+
+  void disableLogs() {
+    _enabled = false;
+  }
+
   void log(Object? message) {
-    dev.log("$type: $message");
+    if (_enabled) dev.log("$type: $message");
   }
 }

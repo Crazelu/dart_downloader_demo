@@ -1,4 +1,4 @@
-import 'package:dart_downloader/core/logger.dart';
+import 'package:dart_downloader_demo/core/logger.dart';
 import 'package:just_audio/just_audio.dart';
 
 class AudioService {

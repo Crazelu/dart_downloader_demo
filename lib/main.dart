@@ -1,4 +1,4 @@
-import 'package:dart_downloader/presentation/views/dart_downloader_view.dart';
+import 'package:dart_downloader_demo/presentation/views/dart_downloader_view.dart';
 import 'package:flutter/material.dart';
 
 void main() {
